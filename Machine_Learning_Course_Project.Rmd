@@ -1,0 +1,287 @@
+---
+title: "Prediction Of Weight Lifting Manner"
+author: "Vladas Alesius"
+date: "July 22, 2018"
+output: html_document
+---
+
+###Summary
+
+The purpose of this project is to find an efficient way to predict the manner of weight lifting
+using respective dataset. For this aim, machine learning method called random forests is used. 
+Comparison of results for training and testing subsets demonstrates that our algorithm prediction is highly accurate.
+ 
+###Introduction
+
+Human Activity Recognition (HAR) is a scientific research area that has been getting more and more
+attention in recent years. HAR has been applied in many different areas related to human health, such as
+elderly monitoring, weight loss programs, and digital assistance for weight lifting exercises.
+
+Electronic devices help collect lots of data about human activity. 
+Enthusiasts measure themselves to improve their health, discover behavioural
+patterns or simply for one's interest. However, HAR research has been more focused 
+on quantity of actions and distinguishing between them than on quality (i.e. how well a
+particular action is done).
+
+In this project, we will use a dataset containing info about weight lifting. Six 20-28 year old men with little
+weight lifting experience were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl 
+in five different ways:
+exactly according to the specification (Class A), 
+throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), 
+lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E).
+Class A corresponds to the correct execution of the exercise, 
+while the other 4 classes correspond to common mistakes.
+
+###Data Processing
+
+```{r,echo=FALSE}
+knitr::opts_chunk$set(cache = TRUE)
+knitr::opts_chunk$set(message = FALSE)
+options(warn = -1)
+```
+
+Let's begin with reading the initial training data set, defining values that we consider to be `NA`:
+
+```{r}
+data1<-read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv",header = TRUE,
+na.strings = c("NA","NaN","","#DIV/0!"))
+```
+
+The dataset contains `r dim(data1)[1]` entries and `r dim(data1)[2]` features:
+
+```{r}
+dim(data1)
+```
+
+Feature names are listed below:
+
+```{r}
+colnames(data1)
+```
+
+As we can see, most features are related to movement data collected 
+from belt, arm, dumbbell and forearm.
+
+However, many features contain some `NA` data:
+
+```{r}
+str(data1,list.len=ncol(data1))
+```
+
+For some of them, `NA` makes the most values:
+
+```{r}
+sum(is.na(data1$kurtosis_roll_forearm))/length(data1$kurtosis_roll_forearm)
+```
+
+It is sensible to remove features with mostly invalid data, 
+so below we find out columns that contain more than 90% `NA` entries:
+
+```{r}
+ivect<-NULL
+for (i in 1:ncol(data1)){
+   if (sum(is.na(data1[,i]))/nrow(data1)>0.9) ivect<-c(ivect,i)
+}
+ivect
+```
+
+Those 100 columns are removed from the dataset below.
+As there are many such columns, number of features will decrease significantly:
+
+```{r}
+data1<-data1[,-ivect]
+```
+
+Also, the first 7 variables are not useful in forecasting either. 
+Timestamp and window markers are not related to weight lifting,
+and person should also be unimportant, since all participants were closely supervised. We will remove them too:
+
+```{r}
+data1<-data1[,-(1:7)]
+```
+
+For our analysis, we will use functions from two `R` packages - `caret` and `randomForest`.
+
+```{r}
+library(caret)
+library(randomForest)
+```
+
+Some variables can be highly correlated with each other. If highly correlated attributes are removed
+from the data, some machine learning models can perform better. In our case, 7 features should be removed:
+
+```{r}
+removeCol<-findCorrelation(cor(data1[,-53]))
+removeCol
+data1<-data1[,-removeCol]
+```
+
+The final dataset contains numeric or integer features with no `NA` values:
+
+```{r}
+dim(data1)
+str(data1,list.len=ncol(data1))
+sum(is.na(data1))
+```
+
+###Model Selection
+
+Since our task is to predict the outcome variable (`classe`) based on multiple prediction variables, we will 
+use machine learning techniques. **Machine learning (ML)** refers to different types of automated algorithms that
+automatically improve their prediction abilities through "learning" from the given data. 
+
+Our analysis will be related to the following ML methods:  
+
+- Decision trees - these algorithms split the data into multiple subsets,
+in order to make each subset as homogeneous as possible.  
+
+- Ensemble learning, in particular - **bagging** and **random forests**
+
+Bagging means "bootstrap aggregating". It takes a training dataset to build multiple different decision tree models 
+by repeatedly using multiple bootstrapped subsets of the data and averaging the models. 
+Each tree is build independently to the others.
+
+Random forest is a type of bagging applied to decision trees.
+They provide a strong improvement in prediction compared to standard decision tree models.
+At each splitting step of the tree algorithm, a random sample of `n` predictors is chosen as split candidates 
+from the full set of the predictors.
+
+You can find more details and examples here:
+http://www.sthda.com/english/articles/35-statistical-machine-learning-essentials/141-cart-model-decision-tree-essentials/
+http://www.sthda.com/english/articles/35-statistical-machine-learning-essentials/140-bagging-and-random-forest-essentials/
+
+Since our aim is to achieve as high prediction accuracy as possible, we will choose random forest technique.
+
+Firstly, we will generate a permutation of entries, so that their order does not affect the algorithm.
+To ensure reproducibility of the experiment, a seed is set. 
+
+```{r}
+set.seed(100)
+data1<-data1[sample(1:nrow(data1)),]
+```
+
+For model verification, our dataset will be split into two: training, which will be used to craft our model,
+and testing, that the model will be checked against. Training dataset will contain 80% of the initial data.
+
+```{r}
+training<-createDataPartition(data1$classe, p = 0.8, list = FALSE)
+trainset<-data1[training,]
+testset<-data1[-training,]
+```
+
+We have seen above that our predictors have values in different ranges - from decimals to hundreds.
+In order to avoid prediction inaccuracies related to different scale of variables, we will
+preprocess the data - center and scale it.
+
+```{r}
+preObj<-preProcess(trainset,c("center","scale"))
+trainset<-predict(preObj,trainset)
+```
+
+Our random forest will be trained using `train` function from `caret` package in `R`.
+However, it takes a lot of time if default settings are used, so we will modify them.
+
+Firstly, `train` function experiments on several `mtry` values (number of variables in trees).
+In order to select one, we will use `tuneRF` function from `randomForest` package.
+It searches for an optimal `mtry` value, comparing Out Of Bag error estimates. 
+We start with `mtry`=`4`, and the lowest OOB value is for `mtry`=`16`.
+So this is the value of `mtry` that we will select for our model.
+
+```{r}
+tuneobj<-tuneRF(trainset[,-46],trainset[,46],mtryStart=4,stepFactor=2,plot=FALSE)
+```
+
+Also, instead of default bootstrapping, the resampling method will be changed to 5-fold cross validation. 
+This means that our training dataset will be split into 5 subsets. One subset
+will be reserved for testing and all other subsets will be used for training. The prediction
+error will be estimated for the test set. This process will be repeated until all subsets have 
+served as test sets. The average of 5 prediction errors is called the cross-validation error.
+
+```{r}
+mod1<-train(classe~.,data=trainset,method = "rf",
+  trControl = trainControl("cv", number = 5),verbose=FALSE,tuneGrid=data.frame(mtry=16))
+mod1
+mean(predict(mod1,trainset)==trainset$classe)
+```
+
+Random forest prediction accuracy is over 99%, and it predicts all `classe` entries in the training set correctly. 
+We will check in the next part if this result holds to the test data. 
+
+###Results
+
+Finally, our results will be presented.
+
+We will investigate our final model, firstly - how well it predicts `classe` in test subset.
+The test subset will be preprocessed in the same way as the training subset.
+
+```{r}
+testset<-predict(preObj,testset)
+mean(predict(mod1,testset)==testset$classe)
+```
+
+This result shows that the model is really well trained - its accuracy exceeds 99.5%, which is even higher than
+training set accuracy. This is most likely because training and testing data are similar, and differences in accuracies
+are mainly accidental.
+
+The summary for the forest using the best parameters is given below:
+
+```{r}
+mod1$finalModel
+```
+
+500 (the default) trees were tried on each iteration, 16 variables as we defined were used.
+OOB error estimate is 0.53%, but different for classes: it is lower than 0.1% for `A`, but reaches
+almost 1% for `D`.
+
+Also, we can now assess variable importance in our model. The dotplot below shows that the most
+important variables are `yaw_belt`, `pitch_forearm`, `pitch_belt` and `magnet_dumbbell_z`.
+
+```{r}
+dotPlot(varImp(mod1),main="Importance Of Variables")
+```
+
+Histogram below shows that values of metrics describing model prediction were about the same 
+for most resampling cases. This shows our result is stable, so most likely reliable:
+
+```{r}
+resampleHist(mod1,type="hist",main="Distribution Of Metric Values")
+```
+
+The plot below demonstrates that OOB error rates decrease when number of trees increases,
+but it stabilizes on about 100 trees. So increasing number of trees in the model is not necessarily useful.
+The highest error rate keeps for class D, the lowest - for class A. This result is consistent with numbers in the
+confusion matrix above.
+
+```{r}
+plot(mod1$finalModel,main="Decrease Of OOB Error Rates")
+legend("topright", colnames(mod1$finalModel$err.rate),col=1:6,cex=0.8,fill=1:6)
+```
+
+Also, frequencies that variables are used in the forest are calculated below:
+
+```{r}
+varUsed(mod1$finalModel)
+```
+
+These are top 4 variables in usage frequency:
+
+```{r}
+varused<-cbind(1:length(varUsed(mod1$finalModel)),varUsed(mod1$finalModel))
+varused<-varused[order(-varused[,2]),]
+colnames(data1)[varused[1:4,1]]
+```
+
+These are the same top 4 predictors by importance. So we can guess that importance in the model is
+related to frequency of variable usage. 
+
+###Conclusion
+
+We have analyzed the dataset containing information about different ways of weight lifting.
+The purpose of this analysis was to find out a way to predict the manner of the exercise,
+whether it is done correctly or not (4 possible mistakes). Unnecessary features were removed from the data, 
+mainly due to lots of `NA` values, high correlation or because of information being useless to the prediction.
+Data was preprocessed (centered and scaled) to put all features on the same scale. 
+Random forest algorithm related functions from `caret` and `randomForest` packages in `R` were selected
+for the prediction. In order to avoid overfitting, the dataset was split into training and testing subsets.
+After tuning necessary parameters, the final forest looks to have high accuracy on both training and testing sets, 
+which indicates its efficiency. 
